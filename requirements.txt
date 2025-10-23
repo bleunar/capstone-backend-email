@@ -1,7 +1,6 @@
 flask
 flask-cors
 
-mysql-connector-python
 prometheus-flask-exporter
 
 python-dotenv
