@@ -1,4 +1,3 @@
-import mysql.connector
 from ..config import config
 import json
 import smtplib

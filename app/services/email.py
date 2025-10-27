@@ -5,7 +5,7 @@ from email.mime.multipart import MIMEMultipart
 from .core import get_mail_server
 
 
-def send_email(receiver: str, subject: str, body: str, html_body: str = None):
+def send_email(receiver: str, subject: str, body: str="", html_body: str = None):
     try:
         sender = config.MAIL_ADDRESS
         message = MIMEMultipart("alternative")
@@ -36,7 +36,7 @@ def send_email(receiver: str, subject: str, body: str, html_body: str = None):
         finally:
             server.quit()
 
-        return {"success": True, "msg": "Email sent successfully"}
+        return True, "Email sent successfully"
 
     except Exception as err:
-        return {"success": False, "msg": f"Failed to send email: {err}"}
+        return False, "Failed to send email: {err}"

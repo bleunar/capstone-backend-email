@@ -1,36 +1,162 @@
-from flask import Blueprint, jsonify, request
-from flask_jwt_extended import jwt_required, get_jwt
-from ..services.email import send_email
-from ..services.validation import check_json_payload
+from flask import Blueprint, request, jsonify, render_template
+from flask_jwt_extended import jwt_required
 from threading import Event
 import time
+from ..services.validation import check_json_payload, common_error_response
+from ..services.email import send_email
 
 email_bp = Blueprint("email", __name__)
 
 
-@email_bp.route("/send", methods=["POST"])
+# Mapping of enum actions to readable labels
+ACTION_LABELS = {
+    "system_unit_name": "System Unit Name",
+    "monitor_name": "Monitor Name",
+    "keyboard_name": "Keyboard Name",
+    "mouse_name": "Mouse Name",
+    "avr_name": "AVR Name",
+    "headset_name": "Headset Name",
+    "system_unit_serial_number": "System Unit Serial No.",
+    "monitor_serial_number": "Monitor Serial No.",
+    "keyboard_serial_number": "Keyboard Serial No.",
+    "mouse_serial_number": "Mouse Serial No.",
+    "avr_serial_number": "AVR Serial No.",
+    "headset_serial_number": "Headset Serial No.",
+    "requires_avr": "Requires AVR",
+    "requires_headset": "Requires Headset",
+    "plugged_power_cable": "Power Cable Plugged",
+    "plugged_display_cable": "Display Cable Plugged",
+    "connectivity": "Connectivity",
+    "performance": "Performance",
+    "status": "Status",
+    "name": "Equipment Name",
+    "issue": "Issue Reported"
+}
+
+
+@email_bp.route("/send/activity", methods=["POST"])
 @jwt_required()
-def send_bulk_email():
+def send_system_activity_email():
     try:
         # validate payload
         data, error_response = check_json_payload()
         if error_response:
             return error_response
-        sender_name = data.get("sender_name")
-        sender_email = data.get("sender_email")
-        receivers = data.get("receivers")
-        subject = data.get("header")
-        body = data.get("body")
-        html_body = data.get("html_body")
 
-        # checkers
-        if not all([sender_name, sender_email, receivers, subject, body]):
-            return jsonify({"success": False, "msg": "Missing required parameters"}), 400
+        receivers = data.get("accounts", [])
+        locations = data.get("locations", [])
+        cleared_activities = data.get("cleared_activities", [])
 
-        if not isinstance(receivers, list) or not receivers:
-            return jsonify({"success": False, "msg": "Receivers must be a non-empty list"}), 400
+        if not receivers or not locations:
+            return jsonify({
+                "success": False,
+                "msg": "Missing 'accounts' or 'locations' in request payload."
+            }), 400
 
-        # setup email send
+        subject = "SYSTEM UPDATES: CLAIMS"
+
+        html_body = f"""
+        <html>
+        <head>
+            <style>
+                body {{
+                    font-family: 'Segoe UI', Arial, sans-serif;
+                    background-color: #f9f9f9;
+                    color: #333;
+                    padding: 20px;
+                }}
+                h2 {{
+                    color: #004085;
+                    margin-bottom: 10px;
+                }}
+                h3 {{
+                    color: #0056b3;
+                    margin-top: 30px;
+                    margin-bottom: 10px;
+                }}
+                table {{
+                    width: 100%;
+                    border-collapse: collapse;
+                    margin-top: 10px;
+                    margin-bottom: 20px;
+                    font-size: 14px;
+                }}
+                th, td {{
+                    padding: 8px 10px;
+                    border: 1px solid #ccc;
+                    text-align: left;
+                }}
+                th {{
+                    background-color: #004085;
+                    color: white;
+                }}
+                tr:nth-child(even) {{
+                    background-color: #f2f2f2;
+                }}
+                .index-col {{
+                    width: 40px;
+                    text-align: center;
+                    font-weight: bold;
+                    color: #004085;
+                }}
+                .footer {{
+                    font-size: 0.9em;
+                    color: #666;
+                    margin-top: 30px;
+                    text-align: center;
+                }}
+            </style>
+        </head>
+        <body>
+            <h2>{subject}</h2>
+            <p>Below are the latest activity updates recorded across your monitored locations:</p>
+        """
+
+        # --- Loop through each location and its activities ---
+        for loc in locations:
+            location_name = loc.get("location_name", "Unknown Location")
+            activities = loc.get("activities", [])
+
+            html_body += f"""
+            <h3>{location_name}</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th>#</th>
+                        <th>Equipment Set</th>
+                        <th>Action</th>
+                        <th>Previous Value</th>
+                        <th>Current Value</th>
+                        <th>Performed By</th>
+                    </tr>
+                </thead>
+                <tbody>
+            """
+
+            for index, act in enumerate(activities, start=1):
+                readable_action = ACTION_LABELS.get(act.get('action', ''), act.get('action', '—'))
+                html_body += f"""
+                    <tr>
+                        <td class="index-col">{index}</td>
+                        <td>{act.get('equipment_set_name', '—')}</td>
+                        <td><b>{readable_action}</b></td>
+                        <td>{act.get('previous_value') or '—'}</td>
+                        <td>{act.get('current_value') or '—'}</td>
+                        <td>{act.get('performed_by_full_name', '—')}</td>
+                    </tr>
+                """
+
+            html_body += "</tbody></table>"
+
+        html_body += """
+            <div class="footer">
+                <p>This is an automated system update email. Please do not reply.</p>
+            </div>
+        </body>
+        </html>
+        """
+
+        # --- Send emails ---
         results = []
         delay_seconds = 1
         stop_event = Event()
@@ -39,42 +165,25 @@ def send_bulk_email():
             if stop_event.is_set():
                 break
 
-            composed_body = f"{body}\n\nSent by: {sender_name} <{sender_email}>"
-
-            # compose html body
-            composed_html = None
-            if html_body:
-                composed_html = f"""
-                <html>
-                  <body style="font-family: Arial, sans-serif;">
-                    {html_body}
-                    <br><br>
-                    <p style="font-size: 0.9em; color: gray;">
-                      Sent by: <b>{sender_name}</b> &lt;{sender_email}&gt;
-                    </p>
-                    <br><br>
-                    <p style="font-size: 0.9em; color: gray;">
-                      This is an automated message, do not reply
-                    </p>
-                  </body>
-                </html>
-                """
-
-            # send email
             result = send_email(
                 receiver=recipient,
                 subject=subject,
-                body=composed_body,
-                html_body=composed_html
+                html_body=html_body
             )
+
+            # Handle tuple return
+            if isinstance(result, tuple):
+                success, message = result
+            else:
+                success = result.get("success", False)
+                message = result.get("msg", "Unknown error")
 
             results.append({
                 "recipient": recipient,
-                "status": "success" if result["success"] else "failed",
-                "message": result["msg"]
+                "status": "success" if success else "failed",
+                "message": message
             })
 
-            # timeout
             if index < len(receivers):
                 time.sleep(delay_seconds)
 
@@ -87,10 +196,12 @@ def send_bulk_email():
                 "failed": sum(1 for r in results if r["status"] == "failed"),
                 "total": len(results)
             },
-            "results": results
-        }), 200 if all_success else 207  # 207 = partial
+            "results": results,
+            "cleared_activities": cleared_activities
+        }), 200 if all_success else 207
 
     except Exception as err:
+        print("Email sending error:", err)
         return jsonify({
             "success": False,
             "msg": f"Failed to send bulk email: {err}"
