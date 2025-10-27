@@ -8,7 +8,7 @@ from ..services.email import send_email
 email_bp = Blueprint("email", __name__)
 
 
-# Mapping of enum actions to readable labels
+# mapping of actions
 ACTION_LABELS = {
     "system_unit_name": "System Unit Name",
     "monitor_name": "Monitor Name",
@@ -38,7 +38,7 @@ ACTION_LABELS = {
 @jwt_required()
 def send_system_activity_email():
     try:
-        # validate payload
+        # --- Validate payload ---
         data, error_response = check_json_payload()
         if error_response:
             return error_response
@@ -55,6 +55,7 @@ def send_system_activity_email():
 
         subject = "SYSTEM UPDATES: CLAIMS"
 
+        # --- Start HTML email body ---
         html_body = f"""
         <html>
         <head>
@@ -85,6 +86,7 @@ def send_system_activity_email():
                     padding: 8px 10px;
                     border: 1px solid #ccc;
                     text-align: left;
+                    vertical-align: top;
                 }}
                 th {{
                     background-color: #004085;
@@ -93,9 +95,8 @@ def send_system_activity_email():
                 tr:nth-child(even) {{
                     background-color: #f2f2f2;
                 }}
-                .index-col {{
-                    width: 40px;
-                    text-align: center;
+                .equip-header {{
+                    background-color: #e9ecef;
                     font-weight: bold;
                     color: #004085;
                 }}
@@ -112,42 +113,59 @@ def send_system_activity_email():
             <p>Below are the latest activity updates recorded across your monitored locations:</p>
         """
 
-        # --- Loop through each location and its activities ---
+        # --- Loop through each location and group activities ---
         for loc in locations:
             location_name = loc.get("location_name", "Unknown Location")
             activities = loc.get("activities", [])
 
+            if not activities:
+                continue
+
+            # Group activities by equipment_set_name
+            grouped_by_equipment = {}
+            for act in activities:
+                eq_name = act.get("equipment_set_name", "Unnamed Equipment")
+                grouped_by_equipment.setdefault(eq_name, []).append(act)
+
+            # Location section
             html_body += f"""
             <h3>{location_name}</h3>
             <table>
                 <thead>
                     <tr>
-                        <th>#</th>
                         <th>Equipment Set</th>
                         <th>Action</th>
                         <th>Previous Value</th>
                         <th>Current Value</th>
-                        <th>Performed By</th>
                     </tr>
                 </thead>
                 <tbody>
             """
 
-            for index, act in enumerate(activities, start=1):
-                readable_action = ACTION_LABELS.get(act.get('action', ''), act.get('action', '—'))
+            # Add grouped rows
+            for eq_name, acts in grouped_by_equipment.items():
+                # Equipment header row
                 html_body += f"""
-                    <tr>
-                        <td class="index-col">{index}</td>
-                        <td>{act.get('equipment_set_name', '—')}</td>
-                        <td><b>{readable_action}</b></td>
-                        <td>{act.get('previous_value') or '—'}</td>
-                        <td>{act.get('current_value') or '—'}</td>
-                        <td>{act.get('performed_by_full_name', '—')}</td>
+                    <tr class="equip-header">
+                        <td colspan="4">{eq_name}</td>
                     </tr>
                 """
 
+                # List all actions for this equipment
+                for act in acts:
+                    readable_action = ACTION_LABELS.get(act.get('action', ''), act.get('action', '—'))
+                    html_body += f"""
+                        <tr>
+                            <td></td>
+                            <td><b>{readable_action}</b></td>
+                            <td>{act.get('previous_value') or '—'}</td>
+                            <td>{act.get('current_value') or '—'}</td>
+                        </tr>
+                    """
+
             html_body += "</tbody></table>"
 
+        # Footer
         html_body += """
             <div class="footer">
                 <p>This is an automated system update email. Please do not reply.</p>
@@ -156,7 +174,7 @@ def send_system_activity_email():
         </html>
         """
 
-        # --- Send emails ---
+        # --- Send emails to all receivers ---
         results = []
         delay_seconds = 1
         stop_event = Event()
@@ -171,7 +189,6 @@ def send_system_activity_email():
                 html_body=html_body
             )
 
-            # Handle tuple return
             if isinstance(result, tuple):
                 success, message = result
             else:
